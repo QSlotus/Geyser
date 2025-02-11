@@ -155,10 +155,11 @@ public class LoginEncryptionUtils {
                                 return;
                             }
 
-                            if (response.clickedButtonId() == 1) {
-                                session.authenticateWithMicrosoftCode();
-                                return;
-                            }
+                            // 移除微软账户登录
+                            // if (response.clickedButtonId() == 1) {
+                            //     session.authenticateWithMicrosoftCode();
+                            //     return;
+                            // }
 
 
 
