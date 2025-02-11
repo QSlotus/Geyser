@@ -217,9 +217,9 @@ public class LoginEncryptionUtils {
                 CustomForm.builder()
                         .translator(GeyserLocale::getPlayerLocaleString, session.locale())
                         .title("geyser.auth.login.form.details.title")
-                        .label("geyser.auth.login.form.details.desc")
-                        .input("geyser.auth.login.form.details.email", "account@qq.com", "")
-                        .input("geyser.auth.login.form.details.pass", "123456", "")
+                        .label("在下方输入你的外置登录（皮肤站）账号登录凭据")
+                        .input("皮肤站账户注册邮箱", "account@qq.com", "")
+                        .input("皮肤站账户密码", "123456", "")
                         .invalidResultHandler(() -> buildAndShowLoginDetailsWindow(session))
                         .closedResultHandler(() -> buildAndShowLoginWindow(session))
                         .validResultHandler((response) -> session.authenticate(response.next(), response.next())));
