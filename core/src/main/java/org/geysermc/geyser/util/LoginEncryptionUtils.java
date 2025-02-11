@@ -145,8 +145,8 @@ public class LoginEncryptionUtils {
                         .translator(GeyserLocale::getPlayerLocaleString, session.locale())
                         .title("geyser.auth.login.form.notice.title")
                         .content("geyser.auth.login.form.notice.desc")
-                        .optionalButton("geyser.auth.login.form.notice.btn_login.mojang", isPasswordAuthEnabled)
-                        .button("geyser.auth.login.form.notice.btn_login.microsoft")
+                        .optionalButton("使用外置登录（皮肤站）", isPasswordAuthEnabled)
+                        // .button("geyser.auth.login.form.notice.btn_login.microsoft")
                         .button("geyser.auth.login.form.notice.btn_disconnect")
                         .closedOrInvalidResultHandler(() -> buildAndShowLoginWindow(session))
                         .validResultHandler((response) -> {
