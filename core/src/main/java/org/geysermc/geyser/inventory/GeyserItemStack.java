@@ -43,6 +43,7 @@ import org.geysermc.geyser.session.cache.BundleCache;
 import org.geysermc.geyser.translator.item.ItemTranslator;
 import org.geysermc.mcprotocollib.protocol.data.game.item.ItemStack;
 import org.geysermc.mcprotocollib.protocol.data.game.item.component.DataComponentType;
+import org.geysermc.mcprotocollib.protocol.data.game.item.component.DataComponentTypes;
 import org.geysermc.mcprotocollib.protocol.data.game.item.component.DataComponents;
 import org.geysermc.mcprotocollib.protocol.data.game.recipe.display.slot.EmptySlotDisplay;
 import org.geysermc.mcprotocollib.protocol.data.game.recipe.display.slot.ItemSlotDisplay;
@@ -89,7 +90,7 @@ public class GeyserItemStack {
     }
 
     public static @NonNull GeyserItemStack from(@Nullable ItemStack itemStack) {
-        return itemStack == null ? EMPTY : new GeyserItemStack(itemStack.getId(), itemStack.getAmount(), itemStack.getDataComponents());
+        return itemStack == null ? EMPTY : new GeyserItemStack(itemStack.getId(), itemStack.getAmount(), itemStack.getDataComponentsPatch());
     }
 
     public static @NonNull GeyserItemStack from(@NonNull SlotDisplay slotDisplay) {
@@ -125,14 +126,14 @@ public class GeyserItemStack {
     }
 
     /**
-     * @return the {@link DataComponents} that aren't the base/default components.
+     * @return the {@link DataComponents} patch that's sent over the network.
      */
     public @Nullable DataComponents getComponents() {
         return isEmpty() ? null : components;
     }
 
     /**
-     * @return whether this GeyserItemStack has any additional components on top of
+     * @return whether this GeyserItemStack has any component modifications additional to
      * the base item components.
      */
     public boolean hasNonBaseComponents() {
@@ -158,16 +159,13 @@ public class GeyserItemStack {
      */
     @Nullable
     public <T> T getComponent(@NonNull DataComponentType<T> type) {
-        if (components == null) {
-            return asItem().getComponent(type);
+        // A data component patch may contain null values to remove base components
+        // e.g. an elytra without the glider component
+        if (components != null && components.contains(type)) {
+            return components.get(type);
         }
 
-        T value = components.get(type);
-        if (value == null) {
-            return asItem().getComponent(type);
-        }
-
-        return value;
+        return asItem().getComponent(type);
     }
 
     public <T> T getComponentElseGet(@NonNull DataComponentType<T> type, Supplier<T> supplier) {
@@ -217,11 +215,11 @@ public class GeyserItemStack {
         // Not fresh from server? Then we have changes to apply!~
         if (bundleData != null && !bundleData.freshFromServer()) {
             if (!bundleData.contents().isEmpty()) {
-                getOrCreateComponents().put(DataComponentType.BUNDLE_CONTENTS, bundleData.toComponent());
+                getOrCreateComponents().put(DataComponentTypes.BUNDLE_CONTENTS, bundleData.toComponent());
             } else {
                 if (components != null) {
                     // Empty list = no component = should delete
-                    components.getDataComponents().remove(DataComponentType.BUNDLE_CONTENTS);
+                    components.getDataComponents().remove(DataComponentTypes.BUNDLE_CONTENTS);
                 }
             }
         }
@@ -248,6 +246,24 @@ public class GeyserItemStack {
             return EmptySlotDisplay.INSTANCE;
         }
         return new ItemStackSlotDisplay(this.getItemStack());
+    }
+
+    public int getMaxDamage() {
+        return getComponentElseGet(DataComponentTypes.MAX_DAMAGE, () -> 0);
+    }
+
+    public int getDamage() {
+        // Damage can't be negative
+        int damage = Math.max(this.getComponentElseGet(DataComponentTypes.DAMAGE, () -> 0), 0);
+        return Math.min(damage, this.getMaxDamage());
+    }
+
+    public boolean nextDamageWillBreak() {
+        return this.isDamageable() && this.getDamage() >= this.getMaxDamage() - 1;
+    }
+
+    public boolean isDamageable() {
+        return getComponent(DataComponentTypes.MAX_DAMAGE) != null && getComponent(DataComponentTypes.UNBREAKABLE) == null && getComponent(DataComponentTypes.DAMAGE) != null;
     }
 
     public Item asItem() {

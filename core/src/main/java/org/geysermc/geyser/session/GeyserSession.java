@@ -40,7 +40,6 @@ import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.objects.Object2IntMap;
 import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
 import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
-import it.unimi.dsi.fastutil.objects.ObjectOpenHashSet;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.Setter;
@@ -97,8 +96,9 @@ import org.cloudburstmc.protocol.bedrock.packet.EmoteListPacket;
 import org.cloudburstmc.protocol.bedrock.packet.GameRulesChangedPacket;
 import org.cloudburstmc.protocol.bedrock.packet.ItemComponentPacket;
 import org.cloudburstmc.protocol.bedrock.packet.LevelEventPacket;
-import org.cloudburstmc.protocol.bedrock.packet.LevelSoundEvent2Packet;
+import org.cloudburstmc.protocol.bedrock.packet.LevelSoundEventPacket;
 import org.cloudburstmc.protocol.bedrock.packet.PlayStatusPacket;
+import org.cloudburstmc.protocol.bedrock.packet.SetCommandsEnabledPacket;
 import org.cloudburstmc.protocol.bedrock.packet.SetTimePacket;
 import org.cloudburstmc.protocol.bedrock.packet.StartGamePacket;
 import org.cloudburstmc.protocol.bedrock.packet.SyncEntityPropertyPacket;
@@ -131,6 +131,7 @@ import org.geysermc.geyser.configuration.GeyserConfiguration;
 import org.geysermc.geyser.entity.EntityDefinitions;
 import org.geysermc.geyser.entity.GeyserEntityData;
 import org.geysermc.geyser.entity.attribute.GeyserAttributeType;
+import org.geysermc.geyser.entity.type.BoatEntity;
 import org.geysermc.geyser.entity.type.Entity;
 import org.geysermc.geyser.entity.type.ItemFrameEntity;
 import org.geysermc.geyser.entity.type.Tickable;
@@ -143,6 +144,8 @@ import org.geysermc.geyser.event.type.SessionDisconnectEventImpl;
 import org.geysermc.geyser.impl.camera.CameraDefinitions;
 import org.geysermc.geyser.impl.camera.GeyserCameraData;
 import org.geysermc.geyser.inventory.Inventory;
+import org.geysermc.geyser.inventory.InventoryHolder;
+import org.geysermc.geyser.inventory.LecternContainer;
 import org.geysermc.geyser.inventory.PlayerInventory;
 import org.geysermc.geyser.inventory.recipe.GeyserRecipe;
 import org.geysermc.geyser.inventory.recipe.GeyserSmithingRecipe;
@@ -152,6 +155,7 @@ import org.geysermc.geyser.item.type.BlockItem;
 import org.geysermc.geyser.level.BedrockDimension;
 import org.geysermc.geyser.level.JavaDimension;
 import org.geysermc.geyser.level.physics.CollisionManager;
+import org.geysermc.geyser.network.GameProtocol;
 import org.geysermc.geyser.network.netty.LocalSession;
 import org.geysermc.geyser.registry.Registries;
 import org.geysermc.geyser.registry.type.BlockMappings;
@@ -176,6 +180,7 @@ import org.geysermc.geyser.session.cache.TagCache;
 import org.geysermc.geyser.session.cache.TeleportCache;
 import org.geysermc.geyser.session.cache.WorldBorder;
 import org.geysermc.geyser.session.cache.WorldCache;
+import org.geysermc.geyser.session.cache.registry.JavaRegistries;
 import org.geysermc.geyser.text.GeyserLocale;
 import org.geysermc.geyser.translator.inventory.InventoryTranslator;
 import org.geysermc.geyser.translator.text.MessageTranslator;
@@ -293,14 +298,33 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
      */
     private boolean isInWorldBorderWarningArea = false;
 
-    private final PlayerInventory playerInventory;
+    /**
+     * Stores the player inventory and player inventory translator
+     */
+    private final InventoryHolder<PlayerInventory> playerInventoryHolder;
+
+    /**
+     * Stores the current open Bedrock inventory, including the correct translator.
+     * Prefer using {@link InventoryUtils#getInventory(GeyserSession, int)}, as this
+     * method can e.g. return a {@code InventoryHolder<LecternContainer>} due to the
+     * workaround in {@link LecternContainer#isBookInPlayerInventory()} workaround.
+     */
     @Setter
-    private Inventory openInventory;
+    private @Nullable InventoryHolder<? extends Inventory> inventoryHolder;
+
+    /**
+     * Whether the client is currently closing an inventory.
+     * Used to open new inventories while another one is currently open.
+     */
     @Setter
     private boolean closingInventory;
 
+    /**
+     * Stores the bedrock inventory id of the pending inventory, or -1 if no inventory is pending.
+     * This id is only set when the block that should be opened exists.
+     */
     @Setter
-    private @NonNull InventoryTranslator inventoryTranslator = InventoryTranslator.PLAYER_INVENTORY_TRANSLATOR;
+    private int pendingOrCurrentBedrockInventoryId = -1;
 
     /**
      * Use {@link #getNextItemNetId()} instead for consistency
@@ -335,17 +359,16 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
     private final Map<Vector3i, ItemFrameEntity> itemFrameCache = new Object2ObjectOpenHashMap<>();
 
     /**
-     * A list of all players that have a player head on with a custom texture.
+     * A map of all players (and their heads) that are wearing a player head with a custom texture.
      * Our workaround for these players is to give them a custom skin and geometry to emulate wearing a custom skull.
      */
-    private final Set<UUID> playerWithCustomHeads = new ObjectOpenHashSet<>();
+    private final Map<UUID, GameProfile> playerWithCustomHeads = new Object2ObjectOpenHashMap<>();
 
     @Setter
     private boolean droppingLecternBook;
 
     @Setter
     private Vector2i lastChunkPosition = null;
-    @Setter
     private int clientRenderDistance = -1;
     private int serverRenderDistance = -1;
 
@@ -482,6 +505,12 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
     private boolean oldSmithingTable = false;
 
     /**
+     * Whether to use the minecart_improvements experiment
+     */
+    @Setter
+    private boolean isUsingExperimentalMinecartLogic = false;
+
+    /**
      * The current attack speed of the player. Used for sending proper cooldown timings.
      * Setting a default fixes cooldowns not showing up on a fresh world.
      */
@@ -526,9 +555,16 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
 
     /**
      * Counts how many ticks have occurred since an arm animation started.
-     * -1 means there is no active arm swing; -2 means an arm swing will start in a tick.
+     * -1 means there is no active arm swing
      */
     private int armAnimationTicks = -1;
+
+    /**
+     * The tick in which the player last hit air.
+     * Used to ensure we dont send two sing packets for one hit.
+     */
+    @Setter
+    private int lastAirHitTick;
 
     /**
      * Controls whether the daylight cycle gamerule has been sent to the client, so the sun/moon remain motionless.
@@ -658,7 +694,6 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
     @Setter
     private int stepTicks = 0;
 
-
     public GeyserSession(GeyserImpl geyser, BedrockServerSession bedrockServerSession, EventLoop tickEventLoop) {
         this.geyser = geyser;
         this.upstream = new UpstreamSession(bedrockServerSession);
@@ -692,8 +727,8 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
         this.playerEntity = new SessionPlayerEntity(this);
         collisionManager.updatePlayerBoundingBox(this.playerEntity.getPosition());
 
-        this.playerInventory = new PlayerInventory();
-        this.openInventory = null;
+        this.playerInventoryHolder = new InventoryHolder<>(this, new PlayerInventory(this), InventoryTranslator.PLAYER_INVENTORY_TRANSLATOR);
+        this.inventoryHolder = null;
         this.craftingRecipes = new Int2ObjectOpenHashMap<>();
         this.javaToBedrockRecipeIds = new Int2ObjectOpenHashMap<>();
         this.lastRecipeNetId = new AtomicInteger(InventoryUtils.LAST_RECIPE_NET_ID + 1);
@@ -718,10 +753,10 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
         // Note: this.dimensionType may be null here if the player is connecting from online mode
         int minY = BedrockDimension.OVERWORLD.minY();
         int maxY = BedrockDimension.OVERWORLD.maxY();
-        for (JavaDimension javaDimension : this.registryCache.dimensions().values()) {
+        for (JavaDimension javaDimension : this.registryCache.registry(JavaRegistries.DIMENSION_TYPE).values()) {
             if (javaDimension.bedrockId() == BedrockDimension.OVERWORLD_ID) {
                 minY = Math.min(minY, javaDimension.minY());
-                maxY = Math.max(maxY, javaDimension.maxY());
+                maxY = Math.max(maxY, javaDimension.minY() + javaDimension.height());
             }
         }
         minY = Math.max(minY, -512);
@@ -744,17 +779,27 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
         sentSpawnPacket = true;
         syncEntityProperties();
 
-        if (GeyserImpl.getInstance().getConfig().isAddNonBedrockItems()) {
+        if (GameProtocol.isPreCreativeInventoryRewrite(this.protocolVersion())) {
             ItemComponentPacket componentPacket = new ItemComponentPacket();
             componentPacket.getItems().addAll(itemMappings.getComponentItemData());
+            upstream.sendPacket(componentPacket);
+        } else {
+            ItemComponentPacket componentPacket = new ItemComponentPacket();
+            componentPacket.getItems().addAll(itemMappings.getItemDefinitions().values());
             upstream.sendPacket(componentPacket);
         }
 
         ChunkUtils.sendEmptyChunks(this, playerEntity.getPosition().toInt(), 0, false);
 
-        BiomeDefinitionListPacket biomeDefinitionListPacket = new BiomeDefinitionListPacket();
-        biomeDefinitionListPacket.setDefinitions(Registries.BIOMES_NBT.get());
-        upstream.sendPacket(biomeDefinitionListPacket);
+        if (GameProtocol.is1_21_80orHigher(this)) {
+            BiomeDefinitionListPacket biomeDefinitionListPacket = new BiomeDefinitionListPacket();
+            biomeDefinitionListPacket.setBiomes(Registries.BIOMES.get());
+            upstream.sendPacket(biomeDefinitionListPacket);
+        } else {
+            BiomeDefinitionListPacket biomeDefinitionListPacket = new BiomeDefinitionListPacket();
+            biomeDefinitionListPacket.setDefinitions(Registries.BIOMES_NBT.get());
+            upstream.sendPacket(biomeDefinitionListPacket);
+        }
 
         AvailableEntityIdentifiersPacket entityPacket = new AvailableEntityIdentifiersPacket();
         entityPacket.setIdentifiers(Registries.BEDROCK_ENTITY_IDENTIFIERS.get());
@@ -765,12 +810,17 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
         upstream.sendPacket(cameraPresetsPacket);
 
         CreativeContentPacket creativePacket = new CreativeContentPacket();
-        creativePacket.setContents(this.itemMappings.getCreativeItems());
+        creativePacket.getContents().addAll(this.itemMappings.getCreativeItems());
+        creativePacket.getGroups().addAll(this.itemMappings.getCreativeItemGroups());
         upstream.sendPacket(creativePacket);
 
         PlayStatusPacket playStatusPacket = new PlayStatusPacket();
         playStatusPacket.setStatus(PlayStatusPacket.Status.PLAYER_SPAWN);
         upstream.sendPacket(playStatusPacket);
+
+        SetCommandsEnabledPacket setCommandsEnabledPacket = new SetCommandsEnabledPacket();
+        setCommandsEnabledPacket.setCommandsEnabled(!geyser.getConfig().isXboxAchievementsEnabled());
+        upstream.sendPacket(setCommandsEnabledPacket);
 
         UpdateAttributesPacket attributesPacket = new UpdateAttributesPacket();
         attributesPacket.setRuntimeEntityId(getPlayerEntity().getGeyserId());
@@ -1142,13 +1192,10 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
 
     public void updateTickingState(float tickRate, boolean frozen) {
         tickThread.cancel(false);
-
         this.tickingFrozen = frozen;
 
         tickRate = MathUtils.clamp(tickRate, 1.0f, 10000.0f);
-
         millisecondsPerTick = 1000.0f / tickRate;
-
         nanosecondsPerTick = MathUtils.ceil(1000000000.0f / tickRate);
         tickThread = tickEventLoop.scheduleAtFixedRate(this::tick, nanosecondsPerTick, nanosecondsPerTick, TimeUnit.NANOSECONDS);
     }
@@ -1161,7 +1208,6 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
         } catch (Throwable e) {
             geyser.getLogger().error("Error thrown in " + this.bedrockUsername() + "'s event loop!", e);
         }
-
     }
 
     /**
@@ -1251,10 +1297,6 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
         worldTicks++;
     }
 
-    public void setAuthenticationData(AuthData authData) {
-        this.authData = authData;
-    }
-
     public void startSneaking() {
         // Toggle the shield, if there is no ongoing arm animation
         // This matches Bedrock Edition behavior as of 1.18.12
@@ -1269,6 +1311,14 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
         disableBlocking();
 
         setSneaking(false);
+    }
+
+    public void setSpinAttack(boolean spinAttack) {
+        switchPose(spinAttack, EntityFlag.DAMAGE_NEARBY_MOBS, Pose.SPIN_ATTACK);
+    }
+
+    public void setGliding(boolean gliding) {
+        switchPose(gliding, EntityFlag.GLIDING, Pose.FALL_FLYING);
     }
 
     private void setSneaking(boolean sneaking) {
@@ -1307,22 +1357,17 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
             playerEntity.updateBedrockMetadata();
             return;
         }
-        toggleSwimmingPose(swimming, EntityFlag.SWIMMING);
+        switchPose(swimming, EntityFlag.SWIMMING, Pose.SWIMMING);
     }
 
     public void setCrawling(boolean crawling) {
-        toggleSwimmingPose(crawling, EntityFlag.CRAWLING);
+        switchPose(crawling, EntityFlag.CRAWLING, Pose.SWIMMING);
     }
 
-    private void toggleSwimmingPose(boolean crawling, EntityFlag flag) {
-        if (crawling) {
-            this.pose = Pose.SWIMMING;
-            playerEntity.setBoundingBoxHeight(0.6f);
-        } else {
-            this.pose = Pose.STANDING;
-            playerEntity.setBoundingBoxHeight(playerEntity.getDefinition().height());
-        }
-        playerEntity.setFlag(flag, crawling);
+    private void switchPose(boolean value, EntityFlag flag, Pose pose) {
+        this.pose = value ? pose : Pose.STANDING;
+        playerEntity.setDimensionsFromPose(this.pose);
+        playerEntity.setFlag(flag, value);
         playerEntity.updateBedrockMetadata();
     }
 
@@ -1344,8 +1389,7 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
 
     public void setClientData(BedrockClientData data) {
         this.clientData = data;
-        this.inputCache.setInputMode(
-            org.cloudburstmc.protocol.bedrock.data.InputMode.values()[data.getCurrentInputMode().ordinal()]);
+        this.inputCache.setInputMode(org.cloudburstmc.protocol.bedrock.data.InputMode.values()[data.getCurrentInputMode().ordinal()]);
     }
 
     /**
@@ -1368,9 +1412,9 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
      * blocking and sends a packet to the Java server.
      */
     private boolean attemptToBlock() {
-        if (playerInventory.getItemInHand().asItem() == Items.SHIELD) {
+        if (playerInventoryHolder.inventory().getItemInHand().asItem() == Items.SHIELD) {
             useItem(Hand.MAIN_HAND);
-        } else if (playerInventory.getOffhand().asItem() == Items.SHIELD) {
+        } else if (playerInventoryHolder.inventory().getOffhand().asItem() == Items.SHIELD) {
             useItem(Hand.OFF_HAND);
         } else {
             // No blocking
@@ -1394,13 +1438,10 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
     }
 
     /**
-     * For <a href="https://github.com/GeyserMC/Geyser/issues/2113">issue 2113</a> and combating arm ticking activating being delayed in
-     * BedrockAnimateTranslator.
+     * You can't break blocks, attack entities, or use items while driving in a boat
      */
-    public void armSwingPending() {
-        if (armAnimationTicks == -1) {
-            armAnimationTicks = -2;
-        }
+    public boolean isHandsBusy() {
+        return playerEntity.getVehicle() instanceof BoatEntity && (steeringRight || steeringLeft);
     }
 
     /**
@@ -1472,14 +1513,24 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
      * Sends a chat message to the Java server.
      */
     public void sendChat(String message) {
-        sendDownstreamGamePacket(new ServerboundChatPacket(message, Instant.now().toEpochMilli(), 0L, null, 0, new BitSet()));
+        sendDownstreamGamePacket(new ServerboundChatPacket(message, Instant.now().toEpochMilli(), 0L, null, 0, new BitSet(), 0));
     }
 
     /**
      * Sends a command to the Java server.
      */
     public void sendCommand(String command) {
-        sendDownstreamGamePacket(new ServerboundChatCommandSignedPacket(command, Instant.now().toEpochMilli(), 0L, Collections.emptyList(), 0, new BitSet()));
+        sendDownstreamGamePacket(new ServerboundChatCommandSignedPacket(command, Instant.now().toEpochMilli(), 0L, Collections.emptyList(), 0, new BitSet(), (byte) 0));
+    }
+
+    public void setClientRenderDistance(int clientRenderDistance) {
+        boolean oldSquareToCircle = this.clientRenderDistance < this.serverRenderDistance;
+        this.clientRenderDistance = clientRenderDistance;
+        boolean newSquareToCircle = this.clientRenderDistance < this.serverRenderDistance;
+
+        if (this.serverRenderDistance != -1 && oldSquareToCircle != newSquareToCircle) {
+            recalculateBedrockRenderDistance();
+        }
     }
 
     public void setServerRenderDistance(int renderDistance) {
@@ -1487,6 +1538,16 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
         renderDistance = Math.min(renderDistance, 96);
         this.serverRenderDistance = renderDistance;
 
+        recalculateBedrockRenderDistance();
+    }
+
+    /**
+     * Ensures that the ChunkRadiusUpdatedPacket uses the correct render distance for whatever the client distance is set as.
+     * If the server render distance is larger than the client's, then account for this and add some extra padding.
+     * We don't want to apply this for every render distance, if at all possible, because
+     */
+    private void recalculateBedrockRenderDistance() {
+        int renderDistance = ChunkUtils.squareToCircle(this.serverRenderDistance);
         ChunkRadiusUpdatedPacket chunkRadiusUpdatedPacket = new ChunkRadiusUpdatedPacket();
         chunkRadiusUpdatedPacket.setRadius(renderDistance);
         upstream.sendPacket(chunkRadiusUpdatedPacket);
@@ -1500,6 +1561,17 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
     public boolean sendForm(@NonNull Form form) {
         formCache.showForm(form);
         return true;
+    }
+
+    public @NonNull PlayerInventory getPlayerInventory() {
+        return this.playerInventoryHolder.inventory();
+    }
+
+    public @Nullable Inventory getOpenInventory() {
+        if (this.inventoryHolder == null) {
+            return null;
+        }
+        return this.inventoryHolder.inventory();
     }
 
     @Override
@@ -1591,6 +1663,8 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
         startGamePacket.getExperiments().add(new ExperimentData("upcoming_creator_features", true));
         // Needed for certain molang queries used in blocks and items
         startGamePacket.getExperiments().add(new ExperimentData("experimental_molang_features", true));
+        // Allows Vibrant Visuals to appear in the settings menu
+        startGamePacket.getExperiments().add(new ExperimentData("experimental_graphics", true));
 
         startGamePacket.setVanillaVersion("*");
         startGamePacket.setInventoriesServerAuthoritative(true);
@@ -1873,6 +1947,7 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
         abilityLayer.setFlySpeed(flySpeed);
         // https://github.com/GeyserMC/Geyser/issues/3139 as of 1.19.10
         abilityLayer.setWalkSpeed(walkSpeed == 0f ? 0.01f : walkSpeed);
+        abilityLayer.setVerticalFlySpeed(1.0f);
         Collections.addAll(abilityLayer.getAbilitiesSet(), USED_ABILITIES);
 
         updateAbilitiesPacket.getAbilityLayers().add(abilityLayer);
@@ -1941,7 +2016,7 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
     }
 
     public void playSoundEvent(SoundEvent sound, Vector3f position) {
-        LevelSoundEvent2Packet packet = new LevelSoundEvent2Packet();
+        LevelSoundEventPacket packet = new LevelSoundEventPacket();
         packet.setPosition(position);
         packet.setSound(sound);
         packet.setIdentifier(":");
@@ -1956,7 +2031,7 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
                  FALL_FLYING, // Elytra
                  SPIN_ATTACK -> 0.4f; // Trident spin attack
             case SLEEPING -> 0.2f;
-            default -> EntityDefinitions.PLAYER.offset();
+            default -> EntityDefinitions.PLAYER.offset(); // 1.62F
         };
     }
 

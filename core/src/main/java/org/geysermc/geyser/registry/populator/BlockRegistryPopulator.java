@@ -42,8 +42,10 @@ import org.cloudburstmc.nbt.NbtMap;
 import org.cloudburstmc.nbt.NbtMapBuilder;
 import org.cloudburstmc.nbt.NbtType;
 import org.cloudburstmc.nbt.NbtUtils;
-import org.cloudburstmc.protocol.bedrock.codec.v748.Bedrock_v748;
 import org.cloudburstmc.protocol.bedrock.codec.v766.Bedrock_v766;
+import org.cloudburstmc.protocol.bedrock.codec.v776.Bedrock_v776;
+import org.cloudburstmc.protocol.bedrock.codec.v786.Bedrock_v786;
+import org.cloudburstmc.protocol.bedrock.codec.v800.Bedrock_v800;
 import org.cloudburstmc.protocol.bedrock.data.BlockPropertyData;
 import org.cloudburstmc.protocol.bedrock.data.definitions.BlockDefinition;
 import org.geysermc.geyser.GeyserImpl;
@@ -56,6 +58,8 @@ import org.geysermc.geyser.level.block.type.Block;
 import org.geysermc.geyser.level.block.type.BlockState;
 import org.geysermc.geyser.level.block.type.FlowerPotBlock;
 import org.geysermc.geyser.registry.BlockRegistries;
+import org.geysermc.geyser.registry.populator.conversion.Conversion776_766;
+import org.geysermc.geyser.registry.populator.conversion.Conversion786_776;
 import org.geysermc.geyser.registry.type.BlockMappings;
 import org.geysermc.geyser.registry.type.GeyserBedrockBlock;
 
@@ -115,9 +119,11 @@ public final class BlockRegistryPopulator {
 
     private static void registerBedrockBlocks() {
         var blockMappers = ImmutableMap.<ObjectIntPair<String>, Remapper>builder()
-                .put(ObjectIntPair.of("1_21_40", Bedrock_v748.CODEC.getProtocolVersion()), Conversion766_748::remapBlock)
-                .put(ObjectIntPair.of("1_21_50", Bedrock_v766.CODEC.getProtocolVersion()), tag -> tag)
-                .build();
+                .put(ObjectIntPair.of("1_21_50", Bedrock_v766.CODEC.getProtocolVersion()), Conversion776_766::remapBlock)
+                .put(ObjectIntPair.of("1_21_60", Bedrock_v776.CODEC.getProtocolVersion()), Conversion786_776::remapBlock)
+                .put(ObjectIntPair.of("1_21_70", Bedrock_v786.CODEC.getProtocolVersion()), tag -> tag)
+                .put(ObjectIntPair.of("1_21_80", Bedrock_v800.CODEC.getProtocolVersion()), tag -> tag)
+            .build();
 
         // We can keep this strong as nothing should be garbage collected
         // Safe to intern since Cloudburst NBT is immutable
@@ -211,6 +217,7 @@ public final class BlockRegistryPopulator {
             GeyserBedrockBlock airDefinition = null;
             BlockDefinition commandBlockDefinition = null;
             BlockDefinition mobSpawnerBlockDefinition = null;
+            BlockDefinition netherPortalBlockDefinition = null;
             BlockDefinition waterDefinition = null;
             BlockDefinition movingBlockDefinition = null;
             Iterator<NbtMap> blocksIterator = BLOCKS_NBT.iterator();
@@ -296,6 +303,10 @@ public final class BlockRegistryPopulator {
                     structureBlockDefinitions.put(mode.toUpperCase(Locale.ROOT), bedrockDefinition);
                 }
 
+                if (block == Blocks.NETHER_PORTAL) {
+                    netherPortalBlockDefinition = bedrockDefinition;
+                }
+
                 boolean waterlogged = blockState.getValue(Properties.WATERLOGGED, false)
                         || block == Blocks.BUBBLE_COLUMN || block == Blocks.KELP || block == Blocks.KELP_PLANT
                         || block == Blocks.SEAGRASS || block == Blocks.TALL_SEAGRASS;
@@ -323,6 +334,11 @@ public final class BlockRegistryPopulator {
                 throw new AssertionError("Unable to find mob spawner block in palette");
             }
             builder.mobSpawnerBlock(mobSpawnerBlockDefinition);
+
+            if (netherPortalBlockDefinition == null) {
+                throw new AssertionError("Unable to find nether portal block in palette");
+            }
+            builder.netherPortalBlock(netherPortalBlockDefinition);
 
             if (waterDefinition  == null) {
                 throw new AssertionError("Unable to find water in palette");
