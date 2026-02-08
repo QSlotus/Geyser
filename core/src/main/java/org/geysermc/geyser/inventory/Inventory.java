@@ -139,8 +139,8 @@ public abstract class Inventory {
     public abstract int getOffsetForHotbar(@Range(from = 0, to = 8) int slot);
 
     public void setItem(int slot, @NonNull GeyserItemStack newItem, GeyserSession session) {
-        if (slot > this.size) {
-            session.getGeyser().getLogger().debug("Tried to set an item out of bounds! " + this);
+        if (slot < 0 || slot >= this.size) {
+            session.getGeyser().getLogger().debug("Tried to set an item out of bounds (slot was " + slot + ")! " + this);
             return;
         }
         GeyserItemStack oldItem = items[slot];
@@ -148,7 +148,7 @@ public abstract class Inventory {
         items[slot] = newItem;
 
         // Lodestone caching
-        if (newItem.asItem() == Items.COMPASS) {
+        if (newItem.is(Items.COMPASS)) {
             var tracker = newItem.getComponent(DataComponentTypes.LODESTONE_TRACKER);
             if (tracker != null) {
                 session.getLodestoneCache().cacheInventoryItem(newItem, tracker);
